@@ -1,6 +1,6 @@
 import pytorch_lightning as pl
 import torch
-from torch import nn
+from torch import isin, nn
 from torch.nn import functional as f
 from torchmetrics import Accuracy
 from torchvision.transforms import functional
@@ -36,6 +36,8 @@ class UNet(nn.Module):
             in_channels=64, out_channels=num_outputs, kernel_size=1
         )
 
+        self.apply(self._init_weights)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         dblocks_result = []
         for block in self.down_blocks:
@@ -48,6 +50,17 @@ class UNet(nn.Module):
         x = self.out_conv(x)
         return x
 
+    @staticmethod
+    def _init_weights(m) -> None:
+        if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
+            nn.init.kaiming_normal_(
+                m.weight,
+                mode="fan_out",
+                nonlinearity="relu"
+            )
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+
 
 class UNetLightning(pl.LightningModule):
     def __init__(self, channels: int, num_outputs: int, lr: float = 0.001) -> None:
@@ -55,7 +68,7 @@ class UNetLightning(pl.LightningModule):
         self.save_hyperparameters()
         self.model = UNet(channels=channels, num_outputs=num_outputs)
         self.lr = lr
-        
+
         self.train_acc = Accuracy("multiclass", num_classes=num_outputs)
         self.val_acc = Accuracy("multiclass", num_classes=num_outputs)
         self.test_acc = Accuracy("multiclass", num_classes=num_outputs)
