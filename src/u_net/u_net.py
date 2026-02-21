@@ -1,5 +1,9 @@
+import pytorch_lightning as pl
 import torch
 from torch import nn
+from torch.nn import functional as f
+from torchmetrics import Accuracy
+from torchvision.transforms import functional
 
 from u_net.building_blocks import DownBlock, UpBlock
 
@@ -40,6 +44,61 @@ class UNet(nn.Module):
         x = self.down_conv(x)
 
         for i, block in enumerate(self.up_blocks):
-            x = block(x, dblocks_result[self.len_dblocks - i])
+            x = block(x, dblocks_result[self.len_dblocks - i - 1])
         x = self.out_conv(x)
         return x
+
+
+class UNetLightning(pl.LightningModule):
+    def __init__(self, channels: int, num_outputs: int, lr: float = 0.001) -> None:
+        super().__init__()
+        self.save_hyperparameters()
+        self.model = UNet(channels=channels, num_outputs=num_outputs)
+        self.lr = lr
+        
+        self.train_acc = Accuracy("multiclass", num_classes=num_outputs)
+        self.val_acc = Accuracy("multiclass", num_classes=num_outputs)
+        self.test_acc = Accuracy("multiclass", num_classes=num_outputs)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
+
+    def common_step(self, img: torch.Tensor, ann: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        logits = self.model(img)
+        ann = functional.center_crop(ann, output_size=(logits.shape[-2], logits.shape[-1]))
+        ann = ann.squeeze(1).long()
+        loss = f.cross_entropy(logits, ann)
+        return logits, loss, ann
+
+    def training_step(self, batch, batch_idx) -> torch.Tensor:
+        img, ann = batch
+        logits, loss, ann = self.common_step(img, ann)
+        preds = torch.argmax(logits, dim=1)
+        self.train_acc(preds, ann)
+
+        self.log("train/loss", loss, on_epoch=True)
+        self.log("train/acc", self.train_acc, on_epoch=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx) -> torch.Tensor:
+        img, ann = batch
+        logits, loss, ann = self.common_step(img, ann)
+        preds = torch.argmax(logits, dim=1)
+        self.val_acc(preds, ann)
+
+        self.log("val/loss", loss, on_epoch=True)
+        self.log("val/acc", self.val_acc, on_epoch=True)
+        return loss
+
+    def test_step(self, batch, batch_idx) -> torch.Tensor:
+        img, ann = batch
+        logits, loss, ann = self.common_step(img, ann)
+        preds = torch.argmax(logits, dim=1)
+        self.test_acc(preds, ann)
+
+        self.log("test/loss", loss, on_epoch=True)
+        self.log("test/acc", self.test_acc, on_epoch=True)
+        return loss
+
+    def configure_optimizers(self) -> torch.optim.Optimizer:
+        return torch.optim.Adam(self.parameters(), lr=self.lr)
